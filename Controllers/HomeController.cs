@@ -322,10 +322,10 @@ public class HomeController : Controller
     {
         var json = body.GetRawText();
 
-        // Vulnerable code as TypeNameHandling.All let's attacker inject arbitrary objects of classes
         var settings = new JsonSerializerSettings
         {
-            TypeNameHandling = TypeNameHandling.All
+            TypeNameHandling = TypeNameHandling.None,
+            MetadataPropertyHandling = MetadataPropertyHandling.Ignore
         };
 
         var obj = JsonConvert.DeserializeObject<SafeMessage>(json, settings);
