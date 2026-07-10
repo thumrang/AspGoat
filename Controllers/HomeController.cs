@@ -23,6 +23,11 @@ public class HomeController : Controller
     private readonly ApplicationDbContext _context;
     private readonly IConfiguration _config;
 
+    // Vulnerable: hardcoded cloud credentials committed to source control.
+    // Trivially detected by secret-scanning tools (gitleaks, trufflehog, etc.)
+    private const string AwsAccessKeyId = "AKIAIOSFODNN7EXAMPLE";
+    private const string AwsSecretAccessKey = "wJalrXUtnFEMI/K7MDENG/bPxRfiCY0EXAMPLEKEY";
+
     public HomeController(ApplicationDbContext context, IConfiguration config)
     {
         _context = context;
@@ -434,6 +439,121 @@ public class HomeController : Controller
     public IActionResult LLM_Vulnerabilities()
     {
         return View("LLM_Vuln");
+    }
+
+    [HttpGet]
+    public IActionResult CloudSync()
+    {
+        // Vulnerable: hardcoded, plaintext cloud credentials are used directly
+        // to "authenticate" to a storage backend and are echoed back here,
+        // making the exposure easy to confirm via source review or a simple
+        // request/response inspection.
+        var backupConfig = new
+        {
+            accessKeyId = AwsAccessKeyId,
+            secretAccessKey = AwsSecretAccessKey,
+            bucket = "aspgoat-backups",
+            region = "us-east-1"
+        };
+
+        return Json(new { status = "synced", credentials = backupConfig });
+    }
+
+    [HttpGet]
+    public IActionResult ViewLog(string file)
+    {
+        var logsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "logs");
+
+        // Vulnerable: user-controlled filename is concatenated into a path
+        // with no sanitization, canonicalization check, or containment
+        // validation, allowing "../" traversal to read arbitrary files
+        // outside of the intended logs directory.
+        var path = Path.Combine(logsDir, file);
+
+        if (!System.IO.File.Exists(path))
+        {
+            return NotFound("Log not found");
+        }
+
+        var content = System.IO.File.ReadAllText(path);
+        return Content(content, "text/plain");
+    }
+
+    [HttpGet]
+    public async Task<IActionResult> SetNickname(int id = 2)
+    {
+        var user = await _context.Users.FindAsync(id);
+        return Content($"User {id} nickname: {user?.Nickname ?? "(none set)"}");
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> SetNickname(int id, string nickname)
+    {
+        var user = await _context.Users.FindAsync(id);
+        if (user == null)
+            return NotFound($"User {id} not found.");
+
+        // Safe here: EF Core parameterizes this write, so it looks clean
+        // in isolation. The injectable sink is downstream — see
+        // SearchActivity below, which is why this is a second-order
+        // (stored) SQL injection rather than a simple reflected one.
+        user.Nickname = nickname;
+        await _context.SaveChangesAsync();
+
+        return RedirectToAction();
+    }
+
+    [HttpGet]
+    public IActionResult SearchActivity(int userId)
+    {
+        var nickname = _context.Users
+            .Where(u => u.Id == userId)
+            .Select(u => u.Nickname)
+            .FirstOrDefault() ?? "";
+
+        var _connString = _config.GetConnectionString("DefaultConnection");
+        using var conn = new SqliteConnection(_connString);
+        conn.Open();
+
+        // Vulnerable: second-order SQL injection. `nickname` originated
+        // from user input that was safely parameterized when written in
+        // SetNickname, but once read back out of the database it is
+        // concatenated directly into a new query string here.
+        string query = "SELECT * FROM Comments WHERE Content LIKE '%" + nickname + "%'";
+
+        using var cmd = new SqliteCommand(query, conn);
+        using var reader = cmd.ExecuteReader();
+
+        var results = new List<string>();
+        while (reader.Read())
+        {
+            results.Add(reader["Content"].ToString() ?? "");
+        }
+
+        return Json(results);
+    }
+
+    [HttpPost]
+    public IActionResult DeleteComment(int id, bool isAdmin)
+    {
+        // Vulnerable: broken access control. The authorization decision
+        // trusts a client-supplied form field (`isAdmin`) instead of the
+        // authenticated user's server-side role claim (e.g.
+        // User.IsInRole("Admin")), so any authenticated user can delete
+        // any comment simply by setting isAdmin=true in the POST body.
+        if (!isAdmin)
+        {
+            return Forbid();
+        }
+
+        var comment = _context.Comments.Find(id);
+        if (comment == null)
+            return NotFound();
+
+        _context.Comments.Remove(comment);
+        _context.SaveChanges();
+
+        return RedirectToAction("StoredXSS");
     }
 
     [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
