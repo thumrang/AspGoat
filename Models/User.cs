@@ -15,4 +15,6 @@ public class User
     public string? LastLoginIP { get; set; }
 
     public string? Role { get; set; }
+
+    public string? Nickname { get; set; }
 }

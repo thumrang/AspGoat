@@ -47,5 +47,28 @@ namespace AspGoat.Controllers
             await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
             return RedirectToAction("Login");
         }
+
+        [HttpGet]
+        public IActionResult ForgotPassword()
+        {
+            return Content("POST a 'username' to generate a password reset code.");
+        }
+
+        [HttpPost]
+        public IActionResult ForgotPassword(string username)
+        {
+            // Vulnerable: the reset code is generated from a
+            // millisecond-of-the-current-second seeded PRNG rather than a
+            // cryptographically secure random source (e.g.
+            // RandomNumberGenerator). The seed space is narrow (0-999),
+            // making the resulting 6-digit code predictable/brute-forceable
+            // by an attacker who can approximate the request time.
+            var rng = new Random(DateTime.UtcNow.Millisecond);
+            var token = rng.Next(100000, 999999).ToString();
+
+            // In a real deployment this would be emailed to the user; it is
+            // returned directly here for demonstration purposes.
+            return Content($"A password reset code has been generated for '{username}': {token}");
+        }
     }
 }
